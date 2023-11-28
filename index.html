@@ -1,0 +1,148 @@
+<head>
+  <!--TODO: download? -->
+  <script type="text/javascript">
+    let canv = null;
+    let canv_ctx = null;
+    let offscreen = null;
+    let offscreen_ctx = null;
+    const WIDTH = 400;
+    const HEIGHT = 400;
+    const CHARS = "abcdefghijklmnopqrstuvwxyz";
+    const FONT_SPEC = "'Roboto', sans-serif"
+    let zoom = 0.0;
+    let i = 0;
+    let locs = null;
+    let center = {x: 0, y: 0};
+    let zoomcenter = {x: 0, y: 0}
+    let netscroll = 0;
+
+    function write(canv, text, x, y, size) {
+      canv.textBaseline = "middle"
+      canv.textAlign = "center"
+      canv.font = `${size}px ` + FONT_SPEC
+      canv.fillText(text, x, y)
+    }
+    function scale() {
+      return 1 + zoom * (WIDTH - 1);
+    }
+    function global2local(coords) {
+      const s = scale();
+      return {
+        x: s * (coords.x + center.x),
+        y: s * (coords.y + center.y)
+      }
+    }
+    function local2global(coords) {
+      const s = scale()
+      return {
+        x: (1.0/s) * coords.x - center.x,
+        y: (1.0/s) * coords.y - center.y
+      }
+    }
+    function draw(unused) {
+      const AVAILABLE = Math.min(WIDTH, HEIGHT)
+      canv_ctx.clearRect(0, 0, WIDTH, HEIGHT)
+      const ssize = 1
+      const destsize = 1
+      for (let loc of locs) {
+        const local = global2local(loc);
+        write(canv_ctx, CHARS[(i+1) % CHARS.length], local.x, local.y, scale())
+      }
+      window.requestAnimationFrame(draw)
+    }
+    function findLocations() {
+      const AVAILABLE = Math.min(WIDTH, HEIGHT)
+      offscreen_ctx.clearRect(0, 0, WIDTH, HEIGHT)
+      write(offscreen_ctx, CHARS[i], AVAILABLE / 2, AVAILABLE / 2, AVAILABLE)
+      data = offscreen_ctx.getImageData(0, 0, AVAILABLE, AVAILABLE)
+      locs = []
+      for (let i = 0; i < AVAILABLE * AVAILABLE; i += 1) {
+        if ((data.data[4*i] | data.data[4*i+1] | data.data[4*i+2] | data.data[4*i+3]) != 0) {
+          locs.push({x: i % AVAILABLE, y: Math.floor(i / AVAILABLE)})
+        }
+      }
+      return locs;
+    }
+    /*function cache() {
+      const AVAILABLE = Math.min(WIDTH, HEIGHT)
+      offscreen_ctx.clearRect(0, 0, WIDTH, HEIGHT)
+      let z = currZoomBetween(1, AVAILABLE)
+      write(offscreen_ctx, CHARS[(i+1) % CHARS.length], z / 2, z / 2, z)
+    }*/
+    function startDrawing() {
+      canv = document.getElementById("canv")
+      canv_ctx = canv.getContext("2d");
+      offscreen = document.getElementById("offscreen");
+      offscreen_ctx = offscreen.getContext("2d");
+      canv.width = offscreen.width = WIDTH;
+      canv.height = offscreen.height = HEIGHT;
+      canv.addEventListener("wheel", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+
+        const mouse = {x: e.clientX, y: e.clientY};
+        const pre = local2global(mouse)
+        netscroll += e.deltaY;
+        zoom = Math.pow(netscroll, 1.1)
+        const post = local2global(mouse)
+        const old_center = {x: center.x, y: center.y}
+        center.x += post.x - pre.x
+        center.y += post.y - pre.y
+        function p(c) {
+          return `x:${c.x.toFixed(1)},y:${c.y.toFixed(1)}`
+        }
+        //console.log(`mouse: ${p(mouse)}, pre: ${p(pre)}, post: ${p(post)}, old_center: ${p(old_center)}, new_center: ${p(center)}`)
+        if (zoom > 1) {
+          zoom -= 1
+          i = (i + 1) % CHARS.length
+          findLocations()
+          center = {x: 0, y: 0}
+        }
+        else if (zoom <= 0) {
+          zoom += 1
+          i = i > 0 ? i - 1 : CHARS.length - 1
+          findLocations()
+          center = {x: 0, y: 0}
+        }
+      })
+      document.addEventListener("mousemove", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (e.buttons === 1) {
+          center.x += e.movementX / scale();
+          center.y += e.movementY / scale();
+        }
+      })
+      locs = findLocations()
+      window.requestAnimationFrame(draw)
+    }
+    window.addEventListener("load", startDrawing);
+
+  </script>
+  <style type="text/css">
+    @font-face {
+      font-family: 'Roboto';
+      src: url(Roboto-Thin.ttf) format('ttf');
+    }
+    canvas {
+      width: 400;
+      height: 400;
+    }
+    #id {
+    }
+    #offscreen {
+      visibility: hidden
+    }
+    body {
+      min-width: 400px;
+      min-height: 400px;
+      margin: 0px
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canv"></canvas>
+  <canvas id="offscreen"></canvas>
+</body>
