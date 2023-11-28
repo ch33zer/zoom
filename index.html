@@ -5,116 +5,154 @@
     let canv_ctx = null;
     let offscreen = null;
     let offscreen_ctx = null;
-    const WIDTH = 400;
-    const HEIGHT = 400;
+    const WIDTH = 500;
+    const HEIGHT = 500;
+    const PADDING = 100
     const CHARS = "abcdefghijklmnopqrstuvwxyz";
     const FONT_SPEC = "'Roboto', sans-serif"
+    let debug = true;
     let zoom = 0.0;
     let i = 0;
     let locs = null;
-    let center = {x: 0, y: 0};
-    let zoomcenter = {x: 0, y: 0}
-    let netscroll = 0;
-
+    let origin = {x: 0, y: 0};
+    let net_zoom = 0;
+    let scrollStack = []
     function write(canv, text, x, y, size) {
       canv.textBaseline = "middle"
       canv.textAlign = "center"
       canv.font = `${size}px ` + FONT_SPEC
       canv.fillText(text, x, y)
     }
-    function scale() {
-      return 1 + zoom * (WIDTH - 1);
+    function scaleBetween(min, max) {
+      return min + zoom * (max - min);
     }
-    function global2local(coords) {
+    function scale() {
+      return scaleBetween(1, WIDTH)
+    }
+    function global2screen(coords) {
       const s = scale();
       return {
-        x: s * (coords.x + center.x),
-        y: s * (coords.y + center.y)
+        x: s * (coords.x + origin.x),
+        y: s * (coords.y + origin.y)
       }
     }
-    function local2global(coords) {
+    function screen2global(coords) {
       const s = scale()
       return {
-        x: (1.0/s) * coords.x - center.x,
-        y: (1.0/s) * coords.y - center.y
+        x: (1.0/s) * coords.x - origin.x,
+        y: (1.0/s) * coords.y - origin.y
       }
     }
     function draw(unused) {
-      const AVAILABLE = Math.min(WIDTH, HEIGHT)
       canv_ctx.clearRect(0, 0, WIDTH, HEIGHT)
       const ssize = 1
       const destsize = 1
       for (let loc of locs) {
-        const local = global2local(loc);
-        write(canv_ctx, CHARS[(i+1) % CHARS.length], local.x, local.y, scale())
+        const screen = global2screen(loc);
+        write(canv_ctx, CHARS[(i+1) % CHARS.length], screen.x, screen.y, scale(1, HEIGHT - 2 * PADDING))
+        if (debug) {
+          canv_ctx.beginPath()
+          canv_ctx.arc(screen.x, screen.y, 2, 0, 2 * Math.PI)
+          canv_ctx.stroke()
+        }
+      }
+      if (debug) {
+        document.getElementById("origin").innerHTML = `center: {x: ${origin.x.toFixed(2)}px y: ${origin.y.toFixed(2)}px}`
+        document.getElementById("zoom").innerHTML = `zoom: ${zoom.toFixed(2)}`
+        canv_ctx.beginPath()
+        const screen = global2screen(origin)
+        canv_ctx.arc(screen.x, screen.y, 2, 0, 2 * Math.PI)
+        canv_ctx.stroke()
       }
       window.requestAnimationFrame(draw)
     }
     function findLocations() {
-      const AVAILABLE = Math.min(WIDTH, HEIGHT)
       offscreen_ctx.clearRect(0, 0, WIDTH, HEIGHT)
-      write(offscreen_ctx, CHARS[i], AVAILABLE / 2, AVAILABLE / 2, AVAILABLE)
-      data = offscreen_ctx.getImageData(0, 0, AVAILABLE, AVAILABLE)
+      write(offscreen_ctx, CHARS[i], WIDTH / 2, HEIGHT / 2, HEIGHT - 2 * PADDING)
+      data = offscreen_ctx.getImageData(0, 0, WIDTH, HEIGHT)
       locs = []
-      for (let i = 0; i < AVAILABLE * AVAILABLE; i += 1) {
+      for (let i = 0; i < WIDTH * HEIGHT; i += 1) {
         if ((data.data[4*i] | data.data[4*i+1] | data.data[4*i+2] | data.data[4*i+3]) != 0) {
-          locs.push({x: i % AVAILABLE, y: Math.floor(i / AVAILABLE)})
+          locs.push({x: i % WIDTH, y: Math.floor(i / WIDTH)})
         }
       }
       return locs;
     }
-    /*function cache() {
-      const AVAILABLE = Math.min(WIDTH, HEIGHT)
-      offscreen_ctx.clearRect(0, 0, WIDTH, HEIGHT)
-      let z = currZoomBetween(1, AVAILABLE)
-      write(offscreen_ctx, CHARS[(i+1) % CHARS.length], z / 2, z / 2, z)
-    }*/
+    function setPixelated(context){
+      context['imageSmoothingEnabled'] = false;       /* standard */
+      context['mozImageSmoothingEnabled'] = false;    /* Firefox */
+      context['oImageSmoothingEnabled'] = false;      /* Opera */
+      context['webkitImageSmoothingEnabled'] = false; /* Safari */
+      context['msImageSmoothingEnabled'] = false;     /* IE */
+    }
+    function wheelHandler(e) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const old_state = {origin: origin, zoom: zoom, net_zoom: net_zoom, i: i};
+      const mouse = {x: e.clientX, y: e.clientY};
+      const pre = screen2global(mouse)
+      net_zoom -= e.deltaY;
+      // 0 -> 0, 3000 -> .25, 4000 -> 1
+      zoom = 0.00411901 * Math.pow(Math.E, 0.00137406 * net_zoom) - 0.00411901
+      const post = screen2global(mouse)
+      origin.x += post.x - pre.x
+      origin.y += post.y - pre.y
+      if (zoom > 1) {
+        // Clone to deep copy origin.
+        scrollStack.push(structuredClone(old_state));
+        zoom = 0
+        net_zoom = 0;
+        i = (i + 1) % CHARS.length
+        findLocations()
+        origin.x %= 1
+        origin.y %= 1
+      }
+      else if (zoom < 0) {
+        if (scrollStack.length > 0) {
+          ({origin, zoom, net_zoom, i} = scrollStack.pop());
+          findLocations()
+        } else {
+          zoom = 1
+          net_zoom = 4000
+          i = i > 0 ? i - 1 : CHARS.length - 1
+          findLocations()
+          const locs_i = Math.floor(Math.random() * locs.length)
+          origin = {
+            x: -locs[locs_i].x + origin.x % 1,
+            y: -locs[locs_i].y + origin.y % 1
+          }
+        }
+      }
+    }
+    function mouseMoveHandler(e) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.buttons === 1) {
+        origin.x += e.movementX / scale();
+        origin.y += e.movementY / scale();
+      }
+    }
+    function keyUpHandler(e) {
+      if (e.key == "h") {
+        let d = document.getElementById("debug")
+        d.hidden = !d.hidden
+        debug = !debug
+      }
+    }
     function startDrawing() {
       canv = document.getElementById("canv")
       canv_ctx = canv.getContext("2d");
+      setPixelated(canv_ctx);
       offscreen = document.getElementById("offscreen");
       offscreen_ctx = offscreen.getContext("2d");
+      setPixelated(offscreen_ctx)
       canv.width = offscreen.width = WIDTH;
       canv.height = offscreen.height = HEIGHT;
-      canv.addEventListener("wheel", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-
-
-        const mouse = {x: e.clientX, y: e.clientY};
-        const pre = local2global(mouse)
-        netscroll += e.deltaY;
-        zoom = Math.pow(netscroll, 1.1)
-        const post = local2global(mouse)
-        const old_center = {x: center.x, y: center.y}
-        center.x += post.x - pre.x
-        center.y += post.y - pre.y
-        function p(c) {
-          return `x:${c.x.toFixed(1)},y:${c.y.toFixed(1)}`
-        }
-        //console.log(`mouse: ${p(mouse)}, pre: ${p(pre)}, post: ${p(post)}, old_center: ${p(old_center)}, new_center: ${p(center)}`)
-        if (zoom > 1) {
-          zoom -= 1
-          i = (i + 1) % CHARS.length
-          findLocations()
-          center = {x: 0, y: 0}
-        }
-        else if (zoom <= 0) {
-          zoom += 1
-          i = i > 0 ? i - 1 : CHARS.length - 1
-          findLocations()
-          center = {x: 0, y: 0}
-        }
-      })
-      document.addEventListener("mousemove", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        if (e.buttons === 1) {
-          center.x += e.movementX / scale();
-          center.y += e.movementY / scale();
-        }
-      })
+      canv.addEventListener("wheel", wheelHandler)
+      canv.addEventListener("mousemove", mouseMoveHandler)
+      document.addEventListener("keyup", keyUpHandler)
       locs = findLocations()
       window.requestAnimationFrame(draw)
     }
@@ -127,8 +165,8 @@
       src: url(Roboto-Thin.ttf) format('ttf');
     }
     canvas {
-      width: 400;
-      height: 400;
+      width: 500;
+      height: 500;
     }
     #id {
     }
@@ -136,8 +174,8 @@
       visibility: hidden
     }
     body {
-      min-width: 400px;
-      min-height: 400px;
+      min-width: 500px;
+      min-height: 500px;
       margin: 0px
     }
   </style>
@@ -145,4 +183,12 @@
 <body>
   <canvas id="canv"></canvas>
   <canvas id="offscreen"></canvas>
+  <div id="debug">
+    <p>
+      <code id="origin"></code>
+    </p>
+    <p>
+      <code id="zoom"></code>
+    </p>
+  </div>
 </body>
