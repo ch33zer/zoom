@@ -7,13 +7,14 @@
     let offscreen_ctx = null;
     const WIDTH = 500;
     const HEIGHT = 500;
-    const PADDING = 100
     const CHARS = "abcdefghijklmnopqrstuvwxyz";
     const FONT_SPEC = "'Roboto', sans-serif"
-    let debug = true;
+    const MAX_DEBUG = 3;
+    let debug = 1;
     let zoom = 0.0;
     let i = 0;
     let locs = null;
+    let neighborhood = [{x: 0, y: 0}];
     let origin = {x: 0, y: 0};
     let net_zoom = 0;
     let scrollStack = []
@@ -32,51 +33,70 @@
     function global2screen(coords) {
       const s = scale();
       return {
-        x: s * (coords.x + origin.x),
-        y: s * (coords.y + origin.y)
+        x: s * (coords.x - origin.x),
+        y: s * (coords.y - origin.y)
       }
     }
     function screen2global(coords) {
       const s = scale()
       return {
-        x: (1.0/s) * coords.x - origin.x,
-        y: (1.0/s) * coords.y - origin.y
+        x: (1.0/s) * coords.x + origin.x,
+        y: (1.0/s) * coords.y + origin.y
       }
     }
     function draw(unused) {
       canv_ctx.clearRect(0, 0, WIDTH, HEIGHT)
       const ssize = 1
       const destsize = 1
-      for (let loc of locs) {
-        const screen = global2screen(loc);
-        write(canv_ctx, CHARS[(i+1) % CHARS.length], screen.x, screen.y, scale(1, HEIGHT - 2 * PADDING))
-        if (debug) {
-          canv_ctx.beginPath()
-          canv_ctx.arc(screen.x, screen.y, 2, 0, 2 * Math.PI)
-          canv_ctx.stroke()
+      for (let neighbor of neighborhood) {
+        for (let loc of locs) {
+          const screen = global2screen({x: loc.x + neighbor.x * WIDTH, y: loc.y + neighbor.y * HEIGHT});
+          write(canv_ctx, CHARS[(i+1) % CHARS.length], screen.x, screen.y, scale(1, HEIGHT))
+          if (debug > 1) {
+            canv_ctx.beginPath()
+            canv_ctx.arc(screen.x, screen.y, 2, 0, 2 * Math.PI)
+            canv_ctx.stroke()
+            write(canv_ctx, `(${loc.x.toFixed(0)},${loc.y.toFixed(0)})`, screen.x, screen.y, 20)
+          }
         }
       }
-      if (debug) {
-        document.getElementById("origin").innerHTML = `center: {x: ${origin.x.toFixed(2)}px y: ${origin.y.toFixed(2)}px}`
+      if (debug > 0) {
+        document.getElementById("origin").innerHTML = `origin: {x: ${origin.x.toFixed(2)}px y: ${origin.y.toFixed(2)}px}`
         document.getElementById("zoom").innerHTML = `zoom: ${zoom.toFixed(2)}`
         canv_ctx.beginPath()
-        const screen = global2screen(origin)
-        canv_ctx.arc(screen.x, screen.y, 2, 0, 2 * Math.PI)
+        canv_ctx.arc(origin.x, origin.y, 2, 0, 2 * Math.PI)
         canv_ctx.stroke()
       }
       window.requestAnimationFrame(draw)
     }
     function findLocations() {
       offscreen_ctx.clearRect(0, 0, WIDTH, HEIGHT)
-      write(offscreen_ctx, CHARS[i], WIDTH / 2, HEIGHT / 2, HEIGHT - 2 * PADDING)
+      write(offscreen_ctx, CHARS[i], WIDTH / 2, HEIGHT / 2, HEIGHT)
       data = offscreen_ctx.getImageData(0, 0, WIDTH, HEIGHT)
-      locs = []
+      let out = []
       for (let i = 0; i < WIDTH * HEIGHT; i += 1) {
         if ((data.data[4*i] | data.data[4*i+1] | data.data[4*i+2] | data.data[4*i+3]) != 0) {
-          locs.push({x: i % WIDTH, y: Math.floor(i / WIDTH)})
+          out.push({x: i % WIDTH, y: Math.floor(i / WIDTH)})
         }
       }
-      return locs;
+      return out
+    }
+    function getNeighborhood() {
+      const center = {x: Math.floor(origin.x - .5), y: Math.floor(origin.y - .5)};
+      let neighborhood = new Set();
+      for (let x_off of [0, 1]) {
+        for (let y_off of [0, 1]) {
+          let coords = {x: center.x - x_off, y: center.y - y_off};
+          // BLEH
+          for (let loc of locs) {
+            if (loc.x === coords.x && loc.y === coords.y) {
+              neighborhood.add({x: x_off, y: y_off})
+              break
+            }
+          }
+        }
+      }
+      return neighborhood;
     }
     function setPixelated(context){
       context['imageSmoothingEnabled'] = false;       /* standard */
@@ -95,32 +115,37 @@
       net_zoom -= e.deltaY;
       // 0 -> 0, 3000 -> .25, 4000 -> 1
       zoom = 0.00411901 * Math.pow(Math.E, 0.00137406 * net_zoom) - 0.00411901
+      console.log("Zoom", zoom)
       const post = screen2global(mouse)
-      origin.x += post.x - pre.x
-      origin.y += post.y - pre.y
+      origin.x -= post.x - pre.x
+      origin.y -= post.y - pre.y
       if (zoom > 1) {
         // Clone to deep copy origin.
         scrollStack.push(structuredClone(old_state));
+        console.log("pushed", old_state);
         zoom = 0
         net_zoom = 0;
         i = (i + 1) % CHARS.length
-        findLocations()
-        origin.x %= 1
-        origin.y %= 1
+        neighborhood = getNeighborhood();
+        locs = findLocations();
+        origin.x = ((origin.x - .5) % 1) * WIDTH
+        origin.y = ((origin.y - .5) % 1) * HEIGHT
       }
       else if (zoom < 0) {
+        neighborhood = [{x: 0, y: 0}]
         if (scrollStack.length > 0) {
+          console.log("Restored", scrollStack[scrollStack.length - 1]);
           ({origin, zoom, net_zoom, i} = scrollStack.pop());
-          findLocations()
+          locs = findLocations();
         } else {
           zoom = 1
           net_zoom = 4000
           i = i > 0 ? i - 1 : CHARS.length - 1
-          findLocations()
+          locs = findLocations()
           const locs_i = Math.floor(Math.random() * locs.length)
           origin = {
-            x: -locs[locs_i].x + origin.x % 1,
-            y: -locs[locs_i].y + origin.y % 1
+            x: locs[locs_i].x - .5,
+            y: locs[locs_i].y - .5
           }
         }
       }
@@ -130,15 +155,15 @@
       e.stopPropagation();
 
       if (e.buttons === 1) {
-        origin.x += e.movementX / scale();
-        origin.y += e.movementY / scale();
+        origin.x -= e.movementX / scale();
+        origin.y -= e.movementY / scale();
       }
     }
     function keyUpHandler(e) {
       if (e.key == "h") {
+        debug = (debug + 1) % MAX_DEBUG;
         let d = document.getElementById("debug")
-        d.hidden = !d.hidden
-        debug = !debug
+        d.hidden = debug == 0;
       }
     }
     function startDrawing() {
@@ -146,7 +171,7 @@
       canv_ctx = canv.getContext("2d");
       setPixelated(canv_ctx);
       offscreen = document.getElementById("offscreen");
-      offscreen_ctx = offscreen.getContext("2d");
+      offscreen_ctx = offscreen.getContext("2d", {willReadFrequently: true});
       setPixelated(offscreen_ctx)
       canv.width = offscreen.width = WIDTH;
       canv.height = offscreen.height = HEIGHT;
@@ -162,7 +187,7 @@
   <style type="text/css">
     @font-face {
       font-family: 'Roboto';
-      src: url(Roboto-Thin.ttf) format('ttf');
+      src: url(Roboto-Regular.ttf) format('truetype');
     }
     canvas {
       width: 500;
@@ -171,7 +196,7 @@
     #id {
     }
     #offscreen {
-      visibility: hidden
+      visibility: visible
     }
     body {
       min-width: 500px;
