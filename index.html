@@ -5,98 +5,176 @@
     let canv_ctx = null;
     let offscreen = null;
     let offscreen_ctx = null;
-    const WIDTH = 500;
-    const HEIGHT = 500;
+    const WIDTH = 501;
+    const HEIGHT = 501;
     const CHARS = "abcdefghijklmnopqrstuvwxyz";
     const FONT_SPEC = "'Roboto', sans-serif"
-    const MAX_DEBUG = 3;
+    const MAX_DEBUG = 2;
     let debug = 1;
-    let zoom = 0.0;
     let i = 0;
-    let locs = null;
-    let neighborhood = [{x: 0, y: 0}];
-    let origin = {x: 0, y: 0};
-    let net_zoom = 0;
-    let scrollStack = []
+    let viewStack = null;
+    class ViewStack {
+      constructor(size) {
+        if (size % 2 == 0) {
+          throw `Size must be odd! Found ${size}`
+        }
+        this.width = this.originalWidth = size
+        this.height = this.originalHeight = size
+        this.viewStack = []
+        this.viewIndexes = []
+        this.handleLevelChange = (v, d) => null
+      }
+      push(stack, index) {
+        this.viewStack.push(stack)
+        this.viewIndexes.push(index)
+      }
+      pop() {
+        this.viewStack.pop()
+        this.viewIndexes.pop()
+      }
+      pixels() {
+        let out = []
+        for (let x = 0; x < this.width; x++) {
+          for (let y = 0; y < this.height; y++) {
+            if (this.#at(this.#add({x:x, y:y}))) {
+              out.push({x:x, y:y});
+            }
+          }
+        }
+        return out;
+      }
+      #at(indexes) {
+        for (let i = 0; i < indexes.length; i++) {
+          if (!this.viewStack[i].has(indexes[i])) {
+            return false;
+          }
+        }
+        return true;
+      }
+      static #saturatedAdd(a, b, x_sat, y_sat) {
+        let rem = {x: 0, y: 0}
+        let coords = {x: a.x + b.x, y: a.y + b.y}
+        rem.x = Math.trunc(coords.x / x_sat) + (coords.x < 0 ? -1 : 0);
+        coords.x %= x_sat 
+        coords.x += coords.x < 0 ? x_sat : 0;
+        rem.y = Math.trunc(coords.y / y_sat) + (coords.y < 0 ? -1 : 0);
+        coords.y %= y_sat
+        coords.y += coords.y < 0 ? y_sat : 0;
+        return {rem: rem, coords: coords}
+      }
+      #add(delta) {
+        let rem = {x: Math.trunc(delta.x), y: Math.trunc(delta.y)}
+        let ret = []
+        ret.length = this.viewIndexes.length
+        for (var i = this.viewIndexes.length - 1; i >= 0; i--) {
+          const curr = i2c(this.viewIndexes[i])
+          let added = ViewStack.#saturatedAdd(curr, rem, this.originalWidth, this.originalHeight)
+          rem = added.rem;
+          ret[i] = c2i(added.coords)
+        }
+        return ret;
+      }
+      scale() {
+        return this.originalWidth / this.width
+      }
+      #changeLevel(dir) {
+        if (dir == 1) {
+          this.width = this.originalWidth
+          this.height = this.originalHeight
+        } else {
+          this.width = 1
+          this.height = 1
+        }
+        this.handleLevelChange(this, dir)
+      }
+      zoomIn() {
+        if (this.width > 1 && this.height > 1) {
+          this.width -= 2
+          this.height -= 2
+          this.moveUnscaled({x: 1, y: 1})
+        } else {
+          this.#changeLevel(1)
+        }
+      }
+      zoomOut() {
+        if (this.width <this.originalWidth && this.height < this.originalHeight) {
+          this.width += 2
+          this.height += 2
+          this.moveUnscaled({x: -1, y: -1})
+        }
+        else if (this.viewStack.length > 1) {
+          this.#changeLevel(-1)
+        }
+      }
+      getViewStackString() {
+        let out = []
+        for (let i of this.viewIndexes) {
+          const c = i2c(i);
+          out.push(`{x:${c.x},y:${c.y}}`)
+        }
+        return out.toString();
+      }
+
+      move(delta) {
+        let newx = Math.trunc(delta.x / this.scale());
+        let newy = Math.trunc(delta.y / this.scale());
+        delta.x = newx == 0 ? Math.sign(delta.x) : newx;
+        delta.y = newy == 0 ? Math.sign(delta.y) : newy;
+        this.moveUnscaled(delta)
+      }
+      globalCoords() {
+        let ret = {x: 0, y:0};
+        let multiplier = 1;
+        for (var i = this.viewIndexes.length - 1; i >= 0; i--, multiplier *= this.width) {
+          let c = i2c(this.viewIndexes[i])
+          ret.x += c.x * multiplier
+          ret.y += c.y * multiplier
+        }
+        return ret;
+      }
+      moveUnscaled(delta) {
+        this.viewIndexes = this.#add(delta)
+      }
+    }
     function write(canv, text, x, y, size) {
       canv.textBaseline = "middle"
       canv.textAlign = "center"
       canv.font = `${size}px ` + FONT_SPEC
       canv.fillText(text, x, y)
     }
-    function scaleBetween(min, max) {
-      return min + zoom * (max - min);
-    }
-    function scale() {
-      return scaleBetween(1, WIDTH)
-    }
-    function global2screen(coords) {
-      const s = scale();
-      return {
-        x: s * (coords.x - origin.x),
-        y: s * (coords.y - origin.y)
-      }
-    }
-    function screen2global(coords) {
-      const s = scale()
-      return {
-        x: (1.0/s) * coords.x + origin.x,
-        y: (1.0/s) * coords.y + origin.y
-      }
-    }
     function draw(unused) {
       canv_ctx.clearRect(0, 0, WIDTH, HEIGHT)
-      const ssize = 1
-      const destsize = 1
-      for (let neighbor of neighborhood) {
-        for (let loc of locs) {
-          const screen = global2screen({x: loc.x + neighbor.x * WIDTH, y: loc.y + neighbor.y * HEIGHT});
-          write(canv_ctx, CHARS[(i+1) % CHARS.length], screen.x, screen.y, scale(1, HEIGHT))
-          if (debug > 1) {
-            canv_ctx.beginPath()
-            canv_ctx.arc(screen.x, screen.y, 2, 0, 2 * Math.PI)
-            canv_ctx.stroke()
-            write(canv_ctx, `(${loc.x.toFixed(0)},${loc.y.toFixed(0)})`, screen.x, screen.y, 20)
-          }
-        }
+      let scale = viewStack.scale();
+      for (let loc of viewStack.pixels()) {
+        // .5 because we draw in the center of the letter.
+        write(canv_ctx, CHARS[(i+1) % CHARS.length], scale * (loc.x + .5), scale * (loc.y + .5), scale)
       }
+      canv_ctx.beginPath()
+      canv_ctx.arc(WIDTH / 2, HEIGHT / 2, 2, 0, 2 * Math.PI)
+      canv_ctx.stroke()
       if (debug > 0) {
-        document.getElementById("origin").innerHTML = `origin: {x: ${origin.x.toFixed(2)}px y: ${origin.y.toFixed(2)}px}`
-        document.getElementById("zoom").innerHTML = `zoom: ${zoom.toFixed(2)}`
-        canv_ctx.beginPath()
-        canv_ctx.arc(origin.x, origin.y, 2, 0, 2 * Math.PI)
-        canv_ctx.stroke()
+        document.getElementById("stack").innerHTML = `viewStack: {${viewStack.getViewStackString()}}`
+        document.getElementById("scale").innerHTML = `scale: ${scale.toFixed(2)}`
       }
       window.requestAnimationFrame(draw)
+    }
+    function i2c(i) {
+      return {x: i % WIDTH, y: Math.floor(i / WIDTH)}
+    }
+    function c2i(c) {
+      return c.y * WIDTH + c.x
     }
     function findLocations() {
       offscreen_ctx.clearRect(0, 0, WIDTH, HEIGHT)
       write(offscreen_ctx, CHARS[i], WIDTH / 2, HEIGHT / 2, HEIGHT)
-      data = offscreen_ctx.getImageData(0, 0, WIDTH, HEIGHT)
-      let out = []
+      let data = offscreen_ctx.getImageData(0, 0, WIDTH, HEIGHT)
+      let out = new Set()
       for (let i = 0; i < WIDTH * HEIGHT; i += 1) {
         if ((data.data[4*i] | data.data[4*i+1] | data.data[4*i+2] | data.data[4*i+3]) != 0) {
-          out.push({x: i % WIDTH, y: Math.floor(i / WIDTH)})
+          out.add(i)
         }
       }
       return out
-    }
-    function getNeighborhood() {
-      const center = {x: Math.floor(origin.x - .5), y: Math.floor(origin.y - .5)};
-      let neighborhood = new Set();
-      for (let x_off of [0, 1]) {
-        for (let y_off of [0, 1]) {
-          let coords = {x: center.x - x_off, y: center.y - y_off};
-          // BLEH
-          for (let loc of locs) {
-            if (loc.x === coords.x && loc.y === coords.y) {
-              neighborhood.add({x: x_off, y: y_off})
-              break
-            }
-          }
-        }
-      }
-      return neighborhood;
     }
     function setPixelated(context){
       context['imageSmoothingEnabled'] = false;       /* standard */
@@ -108,46 +186,10 @@
     function wheelHandler(e) {
       e.preventDefault();
       e.stopPropagation();
-
-      const old_state = {origin: origin, zoom: zoom, net_zoom: net_zoom, i: i};
-      const mouse = {x: e.clientX, y: e.clientY};
-      const pre = screen2global(mouse)
-      net_zoom -= e.deltaY;
-      // 0 -> 0, 3000 -> .25, 4000 -> 1
-      zoom = 0.00411901 * Math.pow(Math.E, 0.00137406 * net_zoom) - 0.00411901
-      console.log("Zoom", zoom)
-      const post = screen2global(mouse)
-      origin.x -= post.x - pre.x
-      origin.y -= post.y - pre.y
-      if (zoom > 1) {
-        // Clone to deep copy origin.
-        scrollStack.push(structuredClone(old_state));
-        console.log("pushed", old_state);
-        zoom = 0
-        net_zoom = 0;
-        i = (i + 1) % CHARS.length
-        neighborhood = getNeighborhood();
-        locs = findLocations();
-        origin.x = ((origin.x - .5) % 1) * WIDTH
-        origin.y = ((origin.y - .5) % 1) * HEIGHT
-      }
-      else if (zoom < 0) {
-        neighborhood = [{x: 0, y: 0}]
-        if (scrollStack.length > 0) {
-          console.log("Restored", scrollStack[scrollStack.length - 1]);
-          ({origin, zoom, net_zoom, i} = scrollStack.pop());
-          locs = findLocations();
-        } else {
-          zoom = 1
-          net_zoom = 4000
-          i = i > 0 ? i - 1 : CHARS.length - 1
-          locs = findLocations()
-          const locs_i = Math.floor(Math.random() * locs.length)
-          origin = {
-            x: locs[locs_i].x - .5,
-            y: locs[locs_i].y - .5
-          }
-        }
+      if (e.deltaY < 0) {
+        viewStack.zoomIn()
+      } else{
+        viewStack.zoomOut()
       }
     }
     function mouseMoveHandler(e) {
@@ -155,8 +197,7 @@
       e.stopPropagation();
 
       if (e.buttons === 1) {
-        origin.x -= e.movementX / scale();
-        origin.y -= e.movementY / scale();
+        viewStack.move({x: -e.movementX, y: -e.movementY})
       }
     }
     function keyUpHandler(e) {
@@ -164,6 +205,21 @@
         debug = (debug + 1) % MAX_DEBUG;
         let d = document.getElementById("debug")
         d.hidden = debug == 0;
+        offscreen.hidden = debug == 0;
+      }
+    }
+    function handleLevelChange(v, dir) {
+      console.log("Level change", v, dir)
+      if (dir == 1) {
+        i = (i + 1) % CHARS.length
+        locs = findLocations();
+        v.push(locs, 0)
+      }
+      else if (dir == -1 && i > 0) {
+        i = i > 0 ? i - 1 : CHARS.length - 1
+        // Unnecessary, useful for debug.
+        locs = findLocations();
+        v.pop()
       }
     }
     function startDrawing() {
@@ -178,7 +234,10 @@
       canv.addEventListener("wheel", wheelHandler)
       canv.addEventListener("mousemove", mouseMoveHandler)
       document.addEventListener("keyup", keyUpHandler)
-      locs = findLocations()
+      let locs = findLocations();
+      viewStack = new ViewStack(WIDTH);
+      viewStack.push(locs, 0)
+      viewStack.handleLevelChange = handleLevelChange
       window.requestAnimationFrame(draw)
     }
     window.addEventListener("load", startDrawing);
@@ -210,10 +269,10 @@
   <canvas id="offscreen"></canvas>
   <div id="debug">
     <p>
-      <code id="origin"></code>
+      <code id="stack"></code>
     </p>
     <p>
-      <code id="zoom"></code>
+      <code id="scale"></code>
     </p>
   </div>
 </body>
