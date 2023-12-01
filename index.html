@@ -5,42 +5,61 @@
     let canv_ctx = null;
     let offscreen = null;
     let offscreen_ctx = null;
-    const WIDTH = 501;
-    const HEIGHT = 501;
-    const CHARS = "abcdefghijklmnopqrstuvwxyz";
     const FONT_SPEC = "'Roboto', sans-serif"
     const MAX_DEBUG = 2;
-    let debug = 1;
+    const LINEAR_ZOOM_CUTOFF = 32;
+    const COLOR_CHANGE_THRESHOLD = 2;
+    let CHARS = "abcdefghijklmnopqrstuvwxyz";
+    let WIDTH = null;
+    let HEIGHT = null;
+    let locs = null; // Not needed, useful for debugging.
+    let debug = 0;
     let i = 0;
     let viewStack = null;
+    let idleZoom = null;
+    let idleZoomTarget = null;
     class ViewStack {
       constructor(size) {
-        if (size % 2 == 0) {
-          throw `Size must be odd! Found ${size}`
-        }
         this.width = this.originalWidth = size
         this.height = this.originalHeight = size
         this.viewStack = []
         this.viewIndexes = []
+        this.subpixelMove = {
+          x: 0,
+          y: 0
+        }
         this.handleLevelChange = (v, d) => null
+        this.dirty = true;
+        this.pixelsCache = null;
       }
       push(stack, index) {
         this.viewStack.push(stack)
         this.viewIndexes.push(index)
+        this.dirty = true
       }
       pop() {
         this.viewStack.pop()
         this.viewIndexes.pop()
+        this.dirty = true
+      }
+      depth() {
+        return this.viewStack.length
       }
       pixels() {
+        if (!this.dirty) {
+          return this.pixelsCache
+        }
         let out = []
-        for (let x = 0; x < this.width; x++) {
-          for (let y = 0; y < this.height; y++) {
+        // Add padding to account for subpixel scrolling.
+        for (let x = -1; x < this.width+1; x++) {
+          for (let y = -1; y < this.height+1; y++) {
             if (this.#at(this.#add({x:x, y:y}))) {
               out.push({x:x, y:y});
             }
           }
         }
+        this.pixelsCache = out;
+        this.dirty = false
         return out;
       }
       #at(indexes) {
@@ -54,16 +73,16 @@
       static #saturatedAdd(a, b, x_sat, y_sat) {
         let rem = {x: 0, y: 0}
         let coords = {x: a.x + b.x, y: a.y + b.y}
-        rem.x = Math.trunc(coords.x / x_sat) + (coords.x < 0 ? -1 : 0);
+        rem.x = Math.floor(coords.x / x_sat);
         coords.x %= x_sat 
         coords.x += coords.x < 0 ? x_sat : 0;
-        rem.y = Math.trunc(coords.y / y_sat) + (coords.y < 0 ? -1 : 0);
+        rem.y = Math.floor(coords.y / y_sat);
         coords.y %= y_sat
         coords.y += coords.y < 0 ? y_sat : 0;
         return {rem: rem, coords: coords}
       }
       #add(delta) {
-        let rem = {x: Math.trunc(delta.x), y: Math.trunc(delta.y)}
+        let rem = {x: delta.x, y: delta.y}
         let ret = []
         ret.length = this.viewIndexes.length
         for (var i = this.viewIndexes.length - 1; i >= 0; i--) {
@@ -89,22 +108,37 @@
       }
       zoomIn() {
         if (this.width > 1 && this.height > 1) {
-          this.width -= 2
-          this.height -= 2
-          this.moveUnscaled({x: 1, y: 1})
+          if (this.width > LINEAR_ZOOM_CUTOFF) {
+            this.width = Math.trunc(this.width / 2)
+            this.height = Math.trunc(this.height / 2)
+          } else {
+            this.width = this.width % 2 == 1 ? this.width : this.width + 1;
+            this.height = this.height % 2 == 1 ? this.height : this.height + 1;
+            this.width -= 2
+            this.height -= 2
+          }
         } else {
           this.#changeLevel(1)
         }
+        this.dirty = true
       }
       zoomOut() {
-        if (this.width <this.originalWidth && this.height < this.originalHeight) {
-          this.width += 2
-          this.height += 2
-          this.moveUnscaled({x: -1, y: -1})
+        // -1 because of 2**n + 1
+        if (this.width < this.originalWidth -1 && this.height < this.originalHeight -1) {
+          if (this.width > LINEAR_ZOOM_CUTOFF) {
+            this.width = Math.trunc(this.width * 2)
+            this.height = Math.trunc(this.height * 2)
+          } else {
+            this.width = this.width % 2 == 1 ? this.width : this.width - 1;
+            this.height = this.height % 2 == 1 ? this.height : this.height - 1;
+            this.width += 2
+            this.height += 2
+          }
         }
-        else if (this.viewStack.length > 1) {
+        else {
           this.#changeLevel(-1)
         }
+        this.dirty = true
       }
       getViewStackString() {
         let out = []
@@ -114,50 +148,41 @@
         }
         return out.toString();
       }
-
-      cursorMove(delta) {
-        let newx = Math.trunc(delta.x / this.scale());
-        let newy = Math.trunc(delta.y / this.scale());
-
-        let newDelta = {
-          x: newx == 0 ? Math.sign(delta.x) : newx,
-          y: newy == 0 ? Math.sign(delta.y) : newy
-        };
-        this.moveUnscaled(newDelta)
+      #trackSubpixel(delta) {
+        let sum = {x: delta.x + this.subpixelMove.x, y: delta.y + this.subpixelMove.y}
+        this.subpixelMove.x = (sum.x % 1) < 0 ? 1 + (sum.x % 1) : sum.x % 1
+        this.subpixelMove.y = (sum.y % 1) < 0 ? 1 + (sum.y % 1) : sum.y % 1
+        sum.x = Math.floor(sum.x) 
+        sum.y = Math.floor(sum.y)
+        return sum
       }
       move(delta) {
-        this.moveUnscaled({
-          x: Math.trunc(delta.x / this.scale()),
-          y: Math.trunc(delta.y / this.scale())
-        })
-      }
-
-      globalCoords() {
-        let ret = {x: 0, y:0};
-        let multiplier = 1;
-        for (var i = this.viewIndexes.length - 1; i >= 0; i--, multiplier *= this.width) {
-          let c = i2c(this.viewIndexes[i])
-          ret.x += c.x * multiplier
-          ret.y += c.y * multiplier
-        }
-        return ret;
-      }
-      moveUnscaled(delta) {
-        this.viewIndexes = this.#add(delta)
+        this.viewIndexes = this.#add(this.#trackSubpixel({
+          x: delta.x / this.scale(),
+          y: delta.y / this.scale()
+        }))
+        this.dirty = true
       }
     }
-    function write(canv, text, x, y, size) {
-      canv.textBaseline = "middle"
-      canv.textAlign = "center"
-      canv.font = `${size}px ` + FONT_SPEC
-      canv.fillText(text, x, y)
+    function setupCanvas(ctx, color, size) {
+      ctx.textBaseline = "middle"
+      ctx.textAlign = "center"
+      ctx.fillStyle = color
+      ctx.font = `${size}px ` + FONT_SPEC
+    }
+    function write(ctx, text, x, y) {
+      ctx.fillText(text, x, y)
     }
     function draw(unused) {
       canv_ctx.clearRect(0, 0, WIDTH, HEIGHT)
       let scale = viewStack.scale();
+      const color = scale > COLOR_CHANGE_THRESHOLD ? "#d8d8d8" : "#000000";
+      setupCanvas(canv_ctx, color, scale)
       for (let loc of viewStack.pixels()) {
         // .5 because we draw in the center of the letter.
-        write(canv_ctx, CHARS[(i+1) % CHARS.length], scale * (loc.x + .5), scale * (loc.y + .5), scale)
+        write(canv_ctx, CHARS[(i+1) % CHARS.length],
+          scale * (loc.x + .5 - viewStack.subpixelMove.x),
+          scale * (loc.y + .5 - viewStack.subpixelMove.y))
       }
       canv_ctx.beginPath()
       canv_ctx.arc(WIDTH / 2, HEIGHT / 2, 2, 0, 2 * Math.PI)
@@ -165,6 +190,8 @@
       if (debug > 0) {
         document.getElementById("stack").innerHTML = `viewStack: {${viewStack.getViewStackString()}}`
         document.getElementById("scale").innerHTML = `scale: ${scale.toFixed(2)}`
+        document.getElementById("viewbox").innerHTML = `viewbox: w ${viewStack.width} x  h ${viewStack.height}`
+        document.getElementById("subpixel").innerHTML = `subpixel: {x: ${viewStack.subpixelMove.x.toFixed(2)}, y: ${viewStack.subpixelMove.y.toFixed(2)}}`
       }
       window.requestAnimationFrame(draw)
     }
@@ -176,7 +203,8 @@
     }
     function findLocations() {
       offscreen_ctx.clearRect(0, 0, WIDTH, HEIGHT)
-      write(offscreen_ctx, CHARS[i], WIDTH / 2, HEIGHT / 2, HEIGHT)
+      setupCanvas(offscreen_ctx, "#000000", HEIGHT)
+      write(offscreen_ctx, CHARS[i], WIDTH / 2, HEIGHT / 2)
       let data = offscreen_ctx.getImageData(0, 0, WIDTH, HEIGHT)
       let out = new Set()
       for (let i = 0; i < WIDTH * HEIGHT; i += 1) {
@@ -186,41 +214,63 @@
       }
       return out
     }
-    function setPixelated(context){
-      context['imageSmoothingEnabled'] = false;       /* standard */
-      context['mozImageSmoothingEnabled'] = false;    /* Firefox */
-      context['oImageSmoothingEnabled'] = false;      /* Opera */
-      context['webkitImageSmoothingEnabled'] = false; /* Safari */
-      context['msImageSmoothingEnabled'] = false;     /* IE */
+    function idleZoomHandler() {
+      const id = [...locs][idleZoomTarget]
+      zoomInTowards(i2c(id)) // Often zooms to the wrong place.
+      idleZoom = setTimeout(idleZoomHandler, 500)
+    }
+    function resetIdleZoom() {
+      if (idleZoom != null) {
+        clearTimeout(idleZoom);
+      }
+      idleZoomTarget = Math.floor(Math.random() * locs.size)
+      // TODO
+      //idleZoom = setTimeout(idleZoomHandler, 1000)
+    }
+    function zoomInTowards(coords) {
+      if (viewStack.width == 1) {
+        // Don't do 'zoom to mouse' behavior if we're about to change the view scale.
+        viewStack.zoomIn();
+        // Fall through to mouse zoom behavior for a second zoom. This makes it so that we
+        // give the appearance of actually zooming across level boundaries.
+      }
+      viewStack.move(coords);
+      viewStack.zoomIn()
+      viewStack.move({x: -coords.x, y: -coords.y})
+    }
+    function zoomOutFrom(coords) {
+      if (viewStack.width == viewStack.originalWidth) {
+        // As above
+        viewStack.zoomOut()
+      }
+      viewStack.move(coords);
+      viewStack.zoomOut()
+      viewStack.move({x: -coords.x, y: -coords.y})
     }
     function wheelHandler(e) {
       e.preventDefault();
       e.stopPropagation();
+      resetIdleZoom();
       if (e.deltaY < 0) {
-        let mouseShift = {
-          x: Math.trunc((e.clientX - WIDTH / 2)),
-          y: Math.trunc((e.clientY - HEIGHT / 2))
-        };
-        viewStack.move(mouseShift);
-        viewStack.zoomIn()
-        viewStack.move({x: -mouseShift.x, y: -mouseShift.y})
+        zoomInTowards({x: e.offsetX, y: e.offsetY})
       } else{
-        viewStack.zoomOut()
+        zoomOutFrom({x: e.offsetX, y: e.offsetY})
       }
     }
     function mouseMoveHandler(e) {
       e.preventDefault();
       e.stopPropagation();
+      resetIdleZoom()
 
       if (e.buttons === 1) {
-        viewStack.cursorMove({x: -e.movementX, y: -e.movementY})
+        viewStack.move({x: -e.movementX, y: -e.movementY})
       }
     }
     function keyUpHandler(e) {
+      resetIdleZoom()
       if (e.key == "h") {
         debug = (debug + 1) % MAX_DEBUG;
-        let d = document.getElementById("debug")
-        d.hidden = debug == 0;
+        document.getElementById("debug").hidden = debug == 0;
         offscreen.hidden = debug == 0;
       }
     }
@@ -229,20 +279,41 @@
       if (dir == 1) {
         i = (i + 1) % CHARS.length
         locs = findLocations();
-        v.push(locs, 0)
+        v.push(locs, c2i({
+          x: Math.trunc(viewStack.subpixelMove.x * WIDTH),
+          y: Math.trunc(viewStack.subpixelMove.y * HEIGHT)
+        }))
       }
-      else if (dir == -1 && i > 0) {
+      else if (dir == -1) {
         i = i > 0 ? i - 1 : CHARS.length - 1
-        // Unnecessary, useful for debug.
+        let currCoords = i2c(viewStack.viewIndexes[viewStack.viewIndexes.length-1]);
+        viewStack.subpixelMove.x = currCoords.x / WIDTH;
+        viewStack.subpixelMove.y = currCoords.y / HEIGHT;
         locs = findLocations();
         v.pop()
+        if (v.depth() == 0) {
+          const id = [...locs][0]
+          v.push(locs, id)
+        }
       }
     }
+    function setPixelated(context){
+      context['imageSmoothingEnabled'] = false;       /* standard */
+      context['mozImageSmoothingEnabled'] = false;    /* Firefox */
+      context['oImageSmoothingEnabled'] = false;      /* Opera */
+      context['webkitImageSmoothingEnabled'] = false; /* Safari */
+      context['msImageSmoothingEnabled'] = false;     /* IE */
+    }
     function startDrawing() {
+      var url = new URL(window.location);
+      CHARS = url.searchParams.get("chars") || CHARS;
       canv = document.getElementById("canv")
-      canv_ctx = canv.getContext("2d");
-      setPixelated(canv_ctx);
       offscreen = document.getElementById("offscreen");
+      const size = Math.min(canv.clientWidth, canv.clientHeight)
+      WIDTH = size;
+      HEIGHT = size;
+      canv_ctx = canv.getContext("2d");
+      setPixelated(canv_ctx)
       offscreen_ctx = offscreen.getContext("2d", {willReadFrequently: true});
       setPixelated(offscreen_ctx)
       canv.width = offscreen.width = WIDTH;
@@ -250,7 +321,7 @@
       canv.addEventListener("wheel", wheelHandler)
       canv.addEventListener("mousemove", mouseMoveHandler)
       document.addEventListener("keyup", keyUpHandler)
-      let locs = findLocations();
+      locs = findLocations();
       viewStack = new ViewStack(WIDTH);
       viewStack.push(locs, 0)
       viewStack.handleLevelChange = handleLevelChange
@@ -265,30 +336,35 @@
       src: url(Roboto-Regular.ttf) format('truetype');
     }
     canvas {
-      width: 500;
-      height: 500;
-    }
-    #id {
-    }
-    #offscreen {
-      visibility: visible
+      width: auto;
+      height: 100%;
+      padding-left: 0;
+      padding-right: 0;
+      margin-left: auto;
+      margin-right: auto;
+      display: block;
+      aspect-ratio: 1;
     }
     body {
-      min-width: 500px;
-      min-height: 500px;
       margin: 0px
     }
   </style>
 </head>
 <body>
   <canvas id="canv"></canvas>
-  <canvas id="offscreen"></canvas>
+  <canvas id="offscreen" hidden></canvas>
   <div id="debug">
     <p>
       <code id="stack"></code>
     </p>
     <p>
       <code id="scale"></code>
+    </p>
+    <p>
+      <code id="viewbox"></code>
+    </p>
+    <p>
+      <code id="subpixel"></code>
     </p>
   </div>
 </body>
