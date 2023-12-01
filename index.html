@@ -64,7 +64,7 @@
       }
       #at(indexes) {
         for (let i = 0; i < indexes.length; i++) {
-          if (!this.viewStack[i].has(indexes[i])) {
+          if (!this.viewStack[i].has(c2i(indexes[i]))) {
             return false;
           }
         }
@@ -82,14 +82,14 @@
         return {rem: rem, coords: coords}
       }
       #add(delta) {
-        let rem = {x: delta.x, y: delta.y}
+        let rem = delta
         let ret = []
         ret.length = this.viewIndexes.length
         for (var i = this.viewIndexes.length - 1; i >= 0; i--) {
-          const curr = i2c(this.viewIndexes[i])
+          const curr = this.viewIndexes[i]
           let added = ViewStack.#saturatedAdd(curr, rem, this.originalWidth, this.originalHeight)
           rem = added.rem;
-          ret[i] = c2i(added.coords)
+          ret[i] = added.coords
         }
         return ret;
       }
@@ -142,8 +142,7 @@
       }
       getViewStackString() {
         let out = []
-        for (let i of this.viewIndexes) {
-          const c = i2c(i);
+        for (let c of this.viewIndexes) {
           out.push(`{x:${c.x},y:${c.y}}`)
         }
         return out.toString();
@@ -185,7 +184,8 @@
       setupCanvas(canv_ctx, color, scale)
       setupCanvas(offscreen_ctx, color, scale)
       write(offscreen_ctx, CHARS[(i+1) % CHARS.length], 0, 0)
-      for (let loc of viewStack.pixels()) {
+      let p = viewStack.pixels();
+      for (let loc of p) {
         canv_ctx.drawImage(offscreen, 0, 0, scale, scale, scale * (loc.x - viewStack.subpixelMove.x), scale * (loc.y - viewStack.subpixelMove.y), scale, scale)
       }
       canv_ctx.beginPath()
@@ -255,10 +255,11 @@
       e.preventDefault();
       e.stopPropagation();
       resetIdleZoom();
+      let zoomCenter = {x: e.offsetX + viewStack.subpixelMove.x, y: e.offsetY + viewStack.subpixelMove.x};
       if (e.deltaY < 0) {
-        zoomInTowards({x: e.offsetX, y: e.offsetY})
+        zoomInTowards(zoomCenter)
       } else{
-        zoomOutFrom({x: e.offsetX, y: e.offsetY})
+        zoomOutFrom(zoomCenter)
       }
     }
     function mouseMoveHandler(e) {
@@ -283,20 +284,20 @@
       if (dir == 1) {
         i = (i + 1) % CHARS.length
         locs = findLocations();
-        v.push(locs, c2i({
+        v.push(locs, {
           x: Math.trunc(viewStack.subpixelMove.x * WIDTH),
           y: Math.trunc(viewStack.subpixelMove.y * HEIGHT)
-        }))
+        })
       }
       else if (dir == -1) {
         i = i > 0 ? i - 1 : CHARS.length - 1
-        let currCoords = i2c(viewStack.viewIndexes[viewStack.viewIndexes.length-1]);
+        let currCoords = viewStack.viewIndexes[viewStack.viewIndexes.length-1];
         viewStack.subpixelMove.x = currCoords.x / WIDTH;
         viewStack.subpixelMove.y = currCoords.y / HEIGHT;
         locs = findLocations();
         v.pop()
         if (v.depth() == 0) {
-          const id = [...locs][0]
+          const id = i2c([...locs][0])
           v.push(locs, id)
         }
       }
@@ -327,7 +328,7 @@
       document.addEventListener("keyup", keyUpHandler)
       locs = findLocations();
       viewStack = new ViewStack(WIDTH);
-      viewStack.push(locs, 0)
+      viewStack.push(locs, {x:0, y:0})
       viewStack.handleLevelChange = handleLevelChange
       window.requestAnimationFrame(draw)
     }
