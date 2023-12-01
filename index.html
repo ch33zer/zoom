@@ -115,13 +115,23 @@
         return out.toString();
       }
 
-      move(delta) {
+      cursorMove(delta) {
         let newx = Math.trunc(delta.x / this.scale());
         let newy = Math.trunc(delta.y / this.scale());
-        delta.x = newx == 0 ? Math.sign(delta.x) : newx;
-        delta.y = newy == 0 ? Math.sign(delta.y) : newy;
-        this.moveUnscaled(delta)
+
+        let newDelta = {
+          x: newx == 0 ? Math.sign(delta.x) : newx,
+          y: newy == 0 ? Math.sign(delta.y) : newy
+        };
+        this.moveUnscaled(newDelta)
       }
+      move(delta) {
+        this.moveUnscaled({
+          x: Math.trunc(delta.x / this.scale()),
+          y: Math.trunc(delta.y / this.scale())
+        })
+      }
+
       globalCoords() {
         let ret = {x: 0, y:0};
         let multiplier = 1;
@@ -187,7 +197,13 @@
       e.preventDefault();
       e.stopPropagation();
       if (e.deltaY < 0) {
+        let mouseShift = {
+          x: Math.trunc((e.clientX - WIDTH / 2)),
+          y: Math.trunc((e.clientY - HEIGHT / 2))
+        };
+        viewStack.move(mouseShift);
         viewStack.zoomIn()
+        viewStack.move({x: -mouseShift.x, y: -mouseShift.y})
       } else{
         viewStack.zoomOut()
       }
@@ -197,7 +213,7 @@
       e.stopPropagation();
 
       if (e.buttons === 1) {
-        viewStack.move({x: -e.movementX, y: -e.movementY})
+        viewStack.cursorMove({x: -e.movementX, y: -e.movementY})
       }
     }
     function keyUpHandler(e) {
