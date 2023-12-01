@@ -165,8 +165,8 @@
       }
     }
     function setupCanvas(ctx, color, size) {
-      ctx.textBaseline = "middle"
-      ctx.textAlign = "center"
+      ctx.textBaseline = "top"
+      ctx.textAlign = "left"
       ctx.fillStyle = color
       ctx.font = `${size}px ` + FONT_SPEC
     }
@@ -175,14 +175,14 @@
     }
     function draw(unused) {
       canv_ctx.clearRect(0, 0, WIDTH, HEIGHT)
+      offscreen_ctx.clearRect(0, 0, WIDTH, HEIGHT)
       let scale = viewStack.scale();
       const color = scale > COLOR_CHANGE_THRESHOLD ? "#d8d8d8" : "#000000";
       setupCanvas(canv_ctx, color, scale)
+      setupCanvas(offscreen_ctx, color, scale)
+      write(offscreen_ctx, CHARS[(i+1) % CHARS.length], 0, 0)
       for (let loc of viewStack.pixels()) {
-        // .5 because we draw in the center of the letter.
-        write(canv_ctx, CHARS[(i+1) % CHARS.length],
-          scale * (loc.x + .5 - viewStack.subpixelMove.x),
-          scale * (loc.y + .5 - viewStack.subpixelMove.y))
+        canv_ctx.drawImage(offscreen, 0, 0, scale, scale, scale * (loc.x - viewStack.subpixelMove.x), scale * (loc.y - viewStack.subpixelMove.y), scale, scale)
       }
       canv_ctx.beginPath()
       canv_ctx.arc(WIDTH / 2, HEIGHT / 2, 2, 0, 2 * Math.PI)
@@ -204,7 +204,7 @@
     function findLocations() {
       offscreen_ctx.clearRect(0, 0, WIDTH, HEIGHT)
       setupCanvas(offscreen_ctx, "#000000", HEIGHT)
-      write(offscreen_ctx, CHARS[i], WIDTH / 2, HEIGHT / 2)
+      write(offscreen_ctx, CHARS[i], 0, 0)
       let data = offscreen_ctx.getImageData(0, 0, WIDTH, HEIGHT)
       let out = new Set()
       for (let i = 0; i < WIDTH * HEIGHT; i += 1) {
@@ -314,7 +314,7 @@
       HEIGHT = size;
       canv_ctx = canv.getContext("2d");
       setPixelated(canv_ctx)
-      offscreen_ctx = offscreen.getContext("2d", {willReadFrequently: true});
+      offscreen_ctx = offscreen.getContext("2d");
       setPixelated(offscreen_ctx)
       canv.width = offscreen.width = WIDTH;
       canv.height = offscreen.height = HEIGHT;
