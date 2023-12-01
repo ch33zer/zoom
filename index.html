@@ -157,10 +157,14 @@
         return sum
       }
       move(delta) {
-        this.viewIndexes = this.#add(this.#trackSubpixel({
+        let newDelta = this.#trackSubpixel({
           x: delta.x / this.scale(),
           y: delta.y / this.scale()
-        }))
+        });
+        if (newDelta.x == 0 && newDelta.y == 0) {
+          return
+        }
+        this.viewIndexes = this.#add(newDelta)
         this.dirty = true
       }
     }
